@@ -1,0 +1,5 @@
+aiohttp==3.12.15
+sqlalchemy==2.0.42
+pydantic==2.11.7
+environs==14.3.0
+psycopg==3.2.9
