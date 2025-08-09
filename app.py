@@ -1,7 +1,9 @@
 from asyncio import TaskGroup
+from typing import Callable
 
 import aiohttp
 
+import config
 from crud import CrudManager
 from models import Planet, Person
 from schema import validate_data, PersonSchema, PlanetSchema
@@ -10,15 +12,8 @@ from schema import validate_data, PersonSchema, PlanetSchema
 class App:
     """The main application that fetches and saves data in the database."""
 
-    INITIAL_PEOPLE_URL = 'https://www.swapi.tech/api/people'
-    INITIAL_PLANETS_URL = 'https://www.swapi.tech/api/planets'
-
-    def __init__(self, crud: CrudManager, tg: TaskGroup):
+    def __init__(self, crud: CrudManager):
         self.crud = crud
-        self.tg = tg
-
-    async def start(self):
-        await self.tg.create_task(self.fetch_people())
 
     @staticmethod
     async def request(url: str) -> dict | None:
@@ -29,62 +24,54 @@ class App:
                     return await response.json()
         return None
 
-    async def fetch_planets(self, url: str = INITIAL_PLANETS_URL):
-        """Fetches a list of planets from the SWAPI."""
-        if data := await self.request(url):
-            # Fetch planets one by one.
-            for item in data.get('results', []):
-                if url := item.get('url', None):
-                    self.tg.create_task(self.fetch_planet(url))
-            # Schedule fetching the next page, if any.
-            if next_url := data.get('next', None):
-                # noinspection PyTypeChecker
-                self.tg.create_task(self.fetch_planets(next_url))
+    async def fetch_items(self, url: str, details_method: Callable):
+        """Fetches items from the SWAPI and saves them."""
+        while url:
+            if data := await self.request(url):
+                # Fetch items one by one.
+                async with TaskGroup() as tg:
+                    tasks = []
+                    for item in data.get('results', []):
+                        if url := item.get('url', None):
+                            tasks.append(tg.create_task(details_method(url)))
+                # All items in this chunk are fetched, save them now.
+                items = [task.result() for task in tasks if task.result()]
+                await self.crud.save_multiple(items)
+                # Prepare URL for the next page fetch, if any.
+                url = data.get('next', None)
 
-    async def fetch_planet(self, url: str):
-        """Fetches a planet from the SWAPI and saves it to the database."""
+    async def fetch_planets(self):
+        """Fetches all the planets from the SWAPI and saves them."""
+        await self.fetch_items(config.INITIAL_PLANETS_URL, self.fetch_planet)
+
+    async def fetch_people(self):
+        """Fetches all the planets from the SWAPI and saves them."""
+        await self.fetch_items(config.INITIAL_PEOPLE_URL, self.fetch_person)
+
+    async def fetch_planet(self, url: str) -> Planet | None:
+        """Fetches a single planet from the SWAPI."""
         if data := await self.request(url):
             try:
-                # Fetch planet data.
                 data = data['result']
-                planet_id = data['uid']
-                data = data['properties']
-                # Validate planet data and save it to the database.
-                data = validate_data(data, PlanetSchema)
-                planet = Planet(id=planet_id, **data)
-                self.crud.save(planet)
+                planet_id = int(data['uid'])
+                if data := validate_data(data['properties'], PlanetSchema):
+                    return Planet(id=planet_id, **data)
             except (KeyError, ValueError):
                 pass
+        return None
 
-    async def fetch_people(self, url: str = INITIAL_PEOPLE_URL):
-        """Fetches a list of people from the SWAPI."""
-        if data := await self.request(url):
-            # Fetch people one by one.
-            for item in data.get('results', []):
-                if url := item.get('url', None):
-                    self.tg.create_task(self.fetch_person(url))
-            # Schedule fetching the next page, if any.
-            if next_url := data.get('next', None):
-                # noinspection PyTypeChecker
-                self.tg.create_task(self.fetch_people(next_url))
-
-    async def fetch_person(self, url: str):
-        """Fetches a person from the SWAPI and saves it in the database."""
+    async def fetch_person(self, url: str) -> Person | None:
+        """Fetches a single person from the SWAPI."""
         if data := await self.request(url):
             try:
                 # Prepare person data.
                 data = data['result']
-                person_id = data['uid']
+                person_id = int(data['uid'])
                 data = data['properties']
-                data = validate_data(data, PersonSchema)
-
-                # Check planet and get its instance.
-                if homeworld_id := data.pop('homeworld', None):
-                    if homeworld := self.crud.get(Planet, homeworld_id):
-                        data['homeworld'] = homeworld
-
-                # Create and save a person instance.
-                person = Person(id=person_id, **data)
-                self.crud.save(person)
+                if data := validate_data(data, PersonSchema):
+                    data['homeworld_id'] = data['homeworld']
+                    del data['homeworld']
+                    return Person(id=person_id, **data)
             except (KeyError, ValueError):
                 pass
+        return None

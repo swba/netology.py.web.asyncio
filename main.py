@@ -1,18 +1,19 @@
 import asyncio
-from asyncio import TaskGroup
 
 from app import App
-from models import database
+from crud import CrudManager
+from db import DbSessionMaker, close_db
+
 
 async def main():
-    with database(True) as crud:
-        # We first need to fetch all planets...
-        async with TaskGroup() as tg:
-            app = App(crud, tg)
-            tg.create_task(app.fetch_planets())
-        # ...and only then fetch people.
-        async with TaskGroup() as tg:
-            app = App(crud, tg)
-            tg.create_task(app.fetch_people())
+    crud = CrudManager(DbSessionMaker)
+    app = App(crud)
+
+    # First save all the planets.
+    await app.fetch_planets()
+    # And only then fetch and save people.
+    await app.fetch_people()
+
+    await close_db()
 
 asyncio.run(main())

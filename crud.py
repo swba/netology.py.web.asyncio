@@ -1,8 +1,9 @@
 from typing import TypeVar
 
 from sqlalchemy import select, ColumnElement
-from sqlalchemy.exc import IntegrityError, NoResultFound, MultipleResultsFound
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import NoResultFound, MultipleResultsFound, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from models import BaseModel
 
@@ -12,28 +13,43 @@ T = TypeVar('T', bound=BaseModel)
 class CrudManager:
     """A general CRUD manager for models."""
 
-    def __init__(self, session: sessionmaker):
-        self.session = session
+    def __init__(self, session_maker: async_sessionmaker):
+        self.session_maker: async_sessionmaker = session_maker
 
-    def get(self, model_cls: type[T], value: any, key: str = 'id') -> T | None:
-        field: ColumnElement = getattr(model_cls, key)
+    async def get(self, model_cls: type[T], value: int) -> T | None:
+        field: ColumnElement = getattr(model_cls, 'id')
         stmt = select(model_cls).where(field == value)
-        with self.session() as session:
+        async with self.session_maker() as session: # type: AsyncSession
             try:
-                return session.scalars(stmt).one()
+                result = await session.execute(stmt)
+                return result.scalars().one()
             except (NoResultFound, MultipleResultsFound):
                 return None
 
-    def save(self, instance: T) -> bool:
-        with self.session() as session:
-            try:
-                session.add(instance)
-                session.commit()
-                return True
-            except IntegrityError:
-                return False
+    async def get_multiple(self, model_cls: type[T], values: list[int]) -> dict[int: T]:
+        field: ColumnElement = getattr(model_cls, 'id')
+        stmt = select(model_cls).where(field.in_(values))
+        async with self.session_maker() as session: # type: AsyncSession
+            results = await session.execute(stmt)
+            return {item.id: item for item in results.scalars()}
 
-    def delete(self, instance: T):
-        with self.session() as session:
-            session.delete(instance)
-            session.commit()
+    async def save(self, instance: T):
+        async with self.session_maker() as session: # type: AsyncSession
+            try:
+                async with session.begin():
+                    session.add(instance)
+            except IntegrityError:
+                pass
+
+    async def save_multiple(self, instances: list[T]):
+        async with self.session_maker() as session: # type: AsyncSession
+            try:
+                async with session.begin():
+                    session.add_all(instances)
+            except IntegrityError:
+                pass
+
+    async def delete(self, instance: T):
+        async with self.session_maker() as session: # type: AsyncSession
+            await session.delete(instance)
+            await session.commit()

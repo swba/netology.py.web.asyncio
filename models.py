@@ -1,20 +1,14 @@
-import atexit
-from contextlib import contextmanager
-
-from sqlalchemy import String, ForeignKey, create_engine, BigInteger
+from sqlalchemy import String, ForeignKey, BigInteger
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
     relationship,
-    DeclarativeBase,
-    sessionmaker
+    DeclarativeBase
 )
 
-import config
-import crud
 
-
-class BaseModel(DeclarativeBase):
+class BaseModel(DeclarativeBase, AsyncAttrs):
     id: Mapped[int] = mapped_column(primary_key=True)
 
 
@@ -49,20 +43,3 @@ class Person(BaseModel):
     mass: Mapped[int] = mapped_column(nullable=True)
     name: Mapped[str] = mapped_column(String(100))
     skin_color: Mapped[str] = mapped_column(String(30), nullable=True)
-
-
-engine = create_engine(config.DB_URL)
-atexit.register(engine.dispose)
-
-
-@contextmanager
-def database(drop=False):
-    """A context manager to work with model tables."""
-    session = sessionmaker(bind=engine)
-    try:
-        if drop:
-            BaseModel.metadata.drop_all(engine)
-        BaseModel.metadata.create_all(engine)
-        yield crud.CrudManager(session)
-    finally:
-        pass
